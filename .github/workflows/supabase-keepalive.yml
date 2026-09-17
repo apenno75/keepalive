@@ -1,0 +1,62 @@
+name: Supabase Keep-Alive
+
+# Esegue un ping leggero verso il progetto Supabase ogni 3 giorni,
+# ben sotto la soglia dei 7 giorni di inattività che causa la pausa.
+# Basta UN solo progetto configurato: tutti i programmi che puntano
+# a questo stesso Supabase restano al sicuro.
+on:
+  schedule:
+    - cron: "0 4 */3 * *"   # ogni 3 giorni alle 04:00 UTC
+  workflow_dispatch: {}      # permette di lanciarlo anche manualmente per testare
+
+permissions:
+  contents: write   # serve per poter fare il commit di log nel passo finale
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repository
+        uses: actions/checkout@v4
+
+      - name: Ping progetto Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_TABLE: keepalive   # nome tabella da interrogare
+        run: |
+          set -e
+
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "Secrets SUPABASE_URL / SUPABASE_KEY mancanti."
+            exit 1
+          fi
+
+          echo "-> Ping ${SUPABASE_URL} sulla tabella '${SUPABASE_TABLE}'..."
+          http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}")
+
+          echo "   HTTP status: $http_code"
+          cat /tmp/resp.json
+          echo ""
+
+          if [ "$http_code" -ge 400 ]; then
+            echo "Il ping è fallito, controlla secrets/URL/tabella."
+            exit 1
+          fi
+
+      # Questo passo serve SOLO a tenere il repository "attivo" agli occhi
+      # di GitHub, perché senza commit periodici GitHub disabiliterebbe
+      # automaticamente lo schedule dopo 60 giorni di silenzio nel repo
+      # (le sole esecuzioni del workflow non vengono considerate attività).
+      - name: Aggiorna log per mantenere attivo il repository
+        run: |
+          mkdir -p logs
+          echo "Ultimo ping: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" > logs/last-ping.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add logs/last-ping.txt
+          git diff --cached --quiet || git commit -m "chore: aggiorna log keep-alive"
+          git push
